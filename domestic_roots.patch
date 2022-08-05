@@ -1,0 +1,2602 @@
+diff --git a/chrome/browser/net/system_network_context_manager.cc b/chrome/browser/net/system_network_context_manager.cc
+index a8b9d9499109e..26737c439d869 100644
+--- a/chrome/browser/net/system_network_context_manager.cc
++++ b/chrome/browser/net/system_network_context_manager.cc
+@@ -900,7 +900,9 @@ void SystemNetworkContextManager::SetEnableCertificateTransparencyForTesting(
+ bool SystemNetworkContextManager::IsCertificateTransparencyEnabled() {
+   if (certificate_transparency_enabled_for_testing_.has_value())
+     return certificate_transparency_enabled_for_testing_.value();
+-#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && defined(OFFICIAL_BUILD)
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#if 1 || BUILDFLAG(GOOGLE_CHROME_BRANDING) && defined(OFFICIAL_BUILD)
++// Copyright 2017 The Chromium Authors. All rights reserved.
+ // TODO(carlosil): Figure out if we can/should remove the OFFICIAL_BUILD and
+ // GOOGLE_CHROME_BRANDING checks now that enforcement does not rely on build
+ // dates, and allow embedders to enforce.
+diff --git a/chrome/browser/ssl/domestic_roots_browsertest.cc b/chrome/browser/ssl/domestic_roots_browsertest.cc
+new file mode 100644
+index 0000000000000..d610c832d08e3
+--- /dev/null
++++ b/chrome/browser/ssl/domestic_roots_browsertest.cc
+@@ -0,0 +1,90 @@
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++
++#include "base/test/scoped_feature_list.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "content/public/common/content_features.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "content/public/test/test_navigation_observer.h"
++#include "net/base/domestic_roots.h"
++#include "net/cert/x509_certificate.h"
++#include "net/dns/mock_host_resolver.h"
++#include "net/test/embedded_test_server/embedded_test_server.h"
++
++namespace {
++class ScopedAllowlistedDomesticRootHost {
++ public:
++  explicit ScopedAllowlistedDomesticRootHost(std::string hostname)
++      : hostname_(std::move(hostname)) {
++    net::SetAllowlistedDomesticRootHostForTesting(&hostname_);
++  }
++  ~ScopedAllowlistedDomesticRootHost() {
++    net::SetAllowlistedDomesticRootHostForTesting(nullptr);
++  }
++
++ private:
++  std::string hostname_;
++};
++}  // namespace
++
++class DomesticRootsTest : public InProcessBrowserTest {
++ public:
++  DomesticRootsTest() {
++    scoped_feature_list_.InitAndEnableFeature(
++        features::kNetworkServiceInProcess);
++  }
++  void SetUpOnMainThread() override {
++    host_resolver()->AddRule("*.example.com", "127.0.0.1");
++
++    net::EmbeddedTestServer::ServerCertificateConfig cert_config;
++    cert_config.dns_names.push_back("test.example.com");
++    cert_config.generate_root_cert = true;
++
++    https_server_.SetSSLConfig(cert_config);
++    https_server_.ServeFilesFromSourceDirectory(GetChromeTestDataDir());
++
++    ASSERT_TRUE(https_server_.Start());
++
++    test_domestic_roots_.push_back(https_server_.GetGeneratedRootCertificate());
++
++    net::SetDomesticRootsForTesting(&test_domestic_roots_);
++  }
++
++  void TearDownOnMainThread() override {
++    net::SetDomesticRootsForTesting(nullptr);
++  }
++
++ protected:
++  bool IsPageLoaded() {
++    std::u16string title;
++    ui_test_utils::GetCurrentTabTitle(browser(), &title);
++    return title == u"OK";
++  }
++
++  base::test::ScopedFeatureList scoped_feature_list_;
++
++  net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
++  net::CertificateList test_domestic_roots_;
++};
++
++IN_PROC_BROWSER_TEST_F(DomesticRootsTest, AllowlistedHost) {
++  ScopedAllowlistedDomesticRootHost allowlisted_host{"test.example.com"};
++  auto url = https_server_.GetURL("test.example.com", "/simple.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
++
++  EXPECT_TRUE(IsPageLoaded());
++}
++
++IN_PROC_BROWSER_TEST_F(DomesticRootsTest, NonAllowlistedHost) {
++  content::TestNavigationObserver nav_observer(
++      browser()->tab_strip_model()->GetActiveWebContents(), 1);
++  auto url = https_server_.GetURL("test.example.com", "/simple.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
++
++  EXPECT_FALSE(IsPageLoaded());
++  EXPECT_EQ(nav_observer.last_net_error_code(),
++            net::ERR_CERTIFICATE_TRANSPARENCY_REQUIRED);
++}
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+index 5d37989dfd49e..71fc1e67f6593 100644
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -2070,6 +2070,9 @@ if (!is_android) {
+       "../browser/ssl/known_interception_disclosure_infobar_browsertest.cc",
+       "../browser/ssl/known_interception_disclosure_ui_browsertest.cc",
+       "../browser/ssl/ocsp_browsertest.cc",
++# Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++      "../browser/ssl/domestic_roots_browsertest.cc",
++# Copyright 2014 The Chromium Authors. All rights reserved.
+       "../browser/ssl/security_state_tab_helper_browsertest.cc",
+       "../browser/ssl/ssl_browsertest.cc",
+       "../browser/ssl/ssl_fenced_frame_browsertest.cc",
+diff --git a/components/certificate_transparency/chrome_require_ct_delegate.cc b/components/certificate_transparency/chrome_require_ct_delegate.cc
+index 76356d2f34a98..96e73db764b98 100644
+--- a/components/certificate_transparency/chrome_require_ct_delegate.cc
++++ b/components/certificate_transparency/chrome_require_ct_delegate.cc
+@@ -26,6 +26,9 @@
+ #include "components/url_formatter/url_fixer.h"
+ #include "components/url_matcher/url_matcher.h"
+ #include "crypto/sha2.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "net/base/domestic_roots.h"
++// Copyright 2016 The Chromium Authors. All rights reserved.
+ #include "net/base/hash_value.h"
+ #include "net/base/host_port_pair.h"
+ #include "net/cert/asn1_util.h"
+@@ -183,6 +186,21 @@ ChromeRequireCTDelegate::IsCTRequiredForHost(
+                        : CTRequirementLevel::NOT_REQUIRED;
+   }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  const auto& domestic_roots = net::GetDomesticRoots();
++  const auto& root_cert = chain->intermediate_buffers().rbegin();
++  if (root_cert != chain->intermediate_buffers().rend()) {
++    for (const auto& domestic_root : domestic_roots) {
++      if (net::x509_util::CryptoBufferEqual(root_cert->get(),
++                                            domestic_root->cert_buffer())) {
++        return net::IsAllowlistedDomesticRootHost(hostname)
++                   ? CTRequirementLevel::NOT_REQUIRED
++                   : CTRequirementLevel::REQUIRED;
++      }
++    }
++  }
++// Copyright 2016 The Chromium Authors. All rights reserved.
++
+   // Compute >= 2018-05-01, rather than deal with possible fractional
+   // seconds.
+   const base::Time kMay_1_2018 =
+diff --git a/components/certificate_transparency/chrome_require_ct_delegate_unittest.cc b/components/certificate_transparency/chrome_require_ct_delegate_unittest.cc
+index 0d4ee5d705889..42624a2416543 100644
+--- a/components/certificate_transparency/chrome_require_ct_delegate_unittest.cc
++++ b/components/certificate_transparency/chrome_require_ct_delegate_unittest.cc
+@@ -16,6 +16,9 @@
+ #include "components/certificate_transparency/pref_names.h"
+ #include "components/prefs/pref_registry_simple.h"
+ #include "components/prefs/testing_pref_service.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "net/base/domestic_roots.h"
++// Copyright 2016 The Chromium Authors. All rights reserved.
+ #include "net/base/hash_value.h"
+ #include "net/cert/x509_certificate.h"
+ #include "net/cert/x509_util.h"
+@@ -75,6 +78,44 @@ TEST_F(ChromeRequireCTDelegateTest, DelegateChecksRequired) {
+             delegate.IsCTRequiredForHost("google.com", cert_.get(), hashes_));
+ }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++TEST_F(ChromeRequireCTDelegateTest, DomesticRoot) {
++  using CTRequirementLevel =
++      net::TransportSecurityState::RequireCTDelegate::CTRequirementLevel;
++
++  auto root_cert = net::CreateCertificateChainFromFile(
++      net::GetTestCertsDirectory(), "root_ca_cert.pem",
++      net::X509Certificate::FORMAT_PEM_CERT_SEQUENCE);
++  ASSERT_TRUE(root_cert);
++
++  std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> intermediates;
++  intermediates.emplace_back(bssl::UpRef(root_cert->cert_buffer()));
++
++  cert_ = net::X509Certificate::CreateFromBuffer(
++      bssl::UpRef(cert_->cert_buffer()), std::move(intermediates));
++  ASSERT_TRUE(cert_);
++
++  ChromeRequireCTDelegate delegate;
++  EXPECT_EQ(CTRequirementLevel::DEFAULT,
++            delegate.IsCTRequiredForHost("example.com", cert_.get(), hashes_));
++
++  net::CertificateList roots{root_cert};
++  net::SetDomesticRootsForTesting(&roots);
++
++  EXPECT_EQ(CTRequirementLevel::REQUIRED,
++            delegate.IsCTRequiredForHost("example.com", cert_.get(), hashes_));
++
++  std::string hostname{"example.com"};
++  net::SetAllowlistedDomesticRootHostForTesting(&hostname);
++
++  EXPECT_EQ(CTRequirementLevel::NOT_REQUIRED,
++            delegate.IsCTRequiredForHost("example.com", cert_.get(), hashes_));
++
++  net::SetAllowlistedDomesticRootHostForTesting(nullptr);
++  net::SetDomesticRootsForTesting(nullptr);
++}
++// Copyright 2016 The Chromium Authors. All rights reserved.
++
+ TEST_F(ChromeRequireCTDelegateTest, DelegateChecksExcluded) {
+   using CTRequirementLevel =
+       net::TransportSecurityState::RequireCTDelegate::CTRequirementLevel;
+diff --git a/net/BUILD.gn b/net/BUILD.gn
+index 029d409152339..6b0ec6fc4cf8b 100644
+--- a/net/BUILD.gn
++++ b/net/BUILD.gn
+@@ -235,6 +235,10 @@ component("net") {
+     "base/registry_controlled_domains/registry_controlled_domain.h",
+     "base/request_priority.cc",
+     "base/request_priority.h",
++# Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++    "base/domestic_roots.cc",
++    "base/domestic_roots.h",
++# Copyright (c) 2013 The Chromium Authors. All rights reserved.
+     "base/scheme_host_port_matcher.cc",
+     "base/scheme_host_port_matcher.h",
+     "base/scheme_host_port_matcher_result.h",
+@@ -4047,6 +4051,9 @@ test("net_unittests") {
+     "base/proxy_server_unittest.cc",
+     "base/proxy_string_util_unittest.cc",
+     "base/registry_controlled_domains/registry_controlled_domain_unittest.cc",
++# Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++    "base/domestic_roots_unittest.cc",
++# Copyright (c) 2013 The Chromium Authors. All rights reserved.
+     "base/scheme_host_port_matcher_rule_unittest.cc",
+     "base/scheme_host_port_matcher_unittest.cc",
+     "base/schemeful_site_unittest.cc",
+diff --git a/net/base/domestic_roots.cc b/net/base/domestic_roots.cc
+new file mode 100644
+index 0000000000000..36e6fe23cc28d
+--- /dev/null
++++ b/net/base/domestic_roots.cc
+@@ -0,0 +1,1420 @@
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++
++#include "net/base/domestic_roots.h"
++
++#include "base/containers/span.h"
++#include "base/no_destructor.h"
++#include "base/strings/string_piece_forward.h"
++#include "base/strings/string_util.h"
++#include "net/cert/x509_certificate.h"
++
++namespace net {
++
++namespace {
++
++// Russian Trusted Root CA
++constexpr char kDomesticRootCert[] =
++    R"(-----BEGIN CERTIFICATE-----
++MIIFwjCCA6qgAwIBAgICEAAwDQYJKoZIhvcNAQELBQAwcDELMAkGA1UEBhMCUlUx
++PzA9BgNVBAoMNlRoZSBNaW5pc3RyeSBvZiBEaWdpdGFsIERldmVsb3BtZW50IGFu
++ZCBDb21tdW5pY2F0aW9uczEgMB4GA1UEAwwXUnVzc2lhbiBUcnVzdGVkIFJvb3Qg
++Q0EwHhcNMjIwMzAxMjEwNDE1WhcNMzIwMjI3MjEwNDE1WjBwMQswCQYDVQQGEwJS
++VTE/MD0GA1UECgw2VGhlIE1pbmlzdHJ5IG9mIERpZ2l0YWwgRGV2ZWxvcG1lbnQg
++YW5kIENvbW11bmljYXRpb25zMSAwHgYDVQQDDBdSdXNzaWFuIFRydXN0ZWQgUm9v
++dCBDQTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAMfFOZ8pUAL3+r2n
++qqE0Zp52selXsKGFYoG0GM5bwz1bSFtCt+AZQMhkWQheI3poZAToYJu69pHLKS6Q
++XBiwBC1cvzYmUYKMYZC7jE5YhEU2bSL0mX7NaMxMDmH2/NwuOVRj8OImVa5s1F4U
++zn4Kv3PFlDBjjSjXKVY9kmjUBsXQrIHeaqmUIsPIlNWUnimXS0I0abExqkbdrXbX
++YwCOXhOO2pDUx3ckmJlCMUGacUTnylyQW2VsJIyIGA8V0xzdaeUXg0VZ6ZmNUr5Y
++Ber/EAOLPb8NYpsAhJe2mXjMB/J9HNsoFMBFJ0lLOT/+dQvjbdRZoOT8eqJpWnVD
++U+QL/qEZnz57N88OWM3rabJkRNdU/Z7x5SFIM9FrqtN8xewsiBWBI0K6XFuOBOTD
++4V08o4TzJ8+Ccq5XlCUW2L48pZNCYuBDfBh7FxkB7qDgGDiaftEkZZfApRg2E+M9
++G8wkNKTPLDc4wH0FDTijhgxR3Y4PiS1HL2Zhw7bD3CbslmEGgfnnZojNkJtcLeBH
++BLa52/dSwNU4WWLubaYSiAmA9IUMX1/RpfpxOxd4Ykmhz97oFbUaDJFipIggx5sX
++ePAlkTdWnv+RWBxlJwMQ25oEHmRguNYf4Zr/Rxr9cS93Y+mdXIZaBEE0KS2iLRqa
++OiWBki9IMQU4phqPOBAaG7A+eP8PAgMBAAGjZjBkMB0GA1UdDgQWBBTh0YHlzlpf
++BKrS6badZrHF+qwshzAfBgNVHSMEGDAWgBTh0YHlzlpfBKrS6badZrHF+qwshzAS
++BgNVHRMBAf8ECDAGAQH/AgEEMA4GA1UdDwEB/wQEAwIBhjANBgkqhkiG9w0BAQsF
++AAOCAgEAALIY1wkilt/urfEVM5vKzr6utOeDWCUczmWX/RX4ljpRdgF+5fAIS4vH
++tmXkqpSCOVeWUrJV9QvZn6L227ZwuE15cWi8DCDal3Ue90WgAJJZMfTshN4OI8cq
++W9E4EG9wglbEtMnObHlms8F3CHmrw3k6KmUkWGoa+/ENmcVl68u/cMRl1JbW2bM+
++/3A+SAg2c6iPDlehczKx2oa95QW0SkPPWGuNA/CE8CpyANIhu9XFrj3RQ3EqeRcS
++AQQod1RNuHpfETLU/A2gMmvn/w/sx7TB3W5BPs6rprOA37tutPq9u6FTZOcG1Oqj
++C/B7yTqgI7rbyvox7DEXoX7rIiEqyNNUguTk/u3SZ4VXE2kmxdmSh3TQvybfbnXV
++4JbCZVaqiZraqc7oZMnRoWrXRG3ztbnbes/9qhRGI7PqXqeKJBztxRTEVj8ONs1d
++WN5szTwaPIvhkhO3CO5ErU2rVdUr89wKpNXbBODFKRtgxUT70YpmJ46VVaqdAhOZ
++D9EUUn4YaeLaS8AjSF/h7UkjOibNc4qVDiPP+rkehFWM66PVnP1Msh93tc+taIfC
++EYVMxjh8zNbFuoc7fzvvrFILLe7ifvEIUqSVIC/AzplM/Jxw7buXFeGP1qVCBEHq
++391d/9RAfaZ12zkwFsl+IKwE/OZxW8AHa9i1p4GO0YSNuczzEm4=
++-----END CERTIFICATE-----
++)";
++
++// The final version of allowlist, locked at May 19, 2022. All further
++// certificates should contain SCTs.
++constexpr base::StringPiece kDomesticRootAllowlist[] = {
++    "131.ru",
++    "1c.ru",
++    "1cbiz.ru",
++    "1cfresh.com",
++    "1cnul.ru",
++    "1erc.ru",
++    "1forma.ru",
++    "22edu.ru",
++    "24farmacia.ru",
++    "2gis.by",
++    "2gis.com",
++    "2gis.one",
++    "2gis.ru",
++    "491shkola.spb.ru",
++    "absolutbank.ru",
++    "absolutins.ru",
++    "acron.ru",
++    "admin.tomsk.ru",
++    "admoblkaluga.ru",
++    "admtomsk.ru",
++    "advert-technology.com",
++    "advert-technology.ru",
++    "aeroexpress.ru",
++    "afisha.ru",
++    "agregatoreat.ru",
++    "aicloud.sbcp.ru",
++    "akbars.ru",
++    "akcept.ru",
++    "aksayland.ru",
++    "albank.ru",
++    "alefbank.ru",
++    "alfaacademzdrav.ru",
++    "alfacapital.ru",
++    "alfahealth.ru",
++    "alfastrah.com",
++    "alfastrah.ru",
++    "alianta.ru",
++    "amelia-st.ru",
++    "amocrm.ru",
++    "amplisens.ru",
++    "ampnuts.com",
++    "ampnuts.ru",
++    "amurobl.ru",
++    "analytics.inoffice.services",
++    "angaragrupp.ru",
++    "ao-rr.ru",
++    "apchr.ru",
++    "apkbank.ru",
++    "april-capital.ru",
++    "aresbank.ru",
++    "asfk-support.ru",
++    "asko-center.ru",
++    "aspcom.biz",
++    "astrovolga.ru",
++    "atlantmetall.ru",
++    "atlascard.ru",
++    "aton.ru",
++    "attachmail.ru",
++    "avangard.ru",
++    "aviashelf.ru",
++    "avtogradbank.ru",
++    "avtotehnik.com",
++    "ax-team.com",
++    "ax-team.ru",
++    "axion.ru",
++    "ayya.tech",
++    "b2b-center.ru",
++    "bank131.ru",
++    "bankermak.ru",
++    "bankline.ru",
++    "bankofpartners.cn",
++    "bankofpartners.com",
++    "bankofpartners.kz",
++    "bankofpartners.ru",
++    "bankorange.ru",
++    "bankperm.ru",
++    "bankro.space",
++    "bankvl.ru",
++    "bbp.one",
++    "bbr.ru",
++    "bc-electromera.ru",
++    "belkult.ru",
++    "belspravka.ru",
++    "best2pay.net",
++    "besteffortsbank.ru",
++    "bestofpartners.cn",
++    "bestofpartners.com",
++    "bgfbank.ru",
++    "bias.ru",
++    "biblioteka29.ru",
++    "billing.ru",
++    "billing74.ru",
++    "billing74info.ru",
++    "bm-bank.ru",
++    "bobcat-pro.ru",
++    "bratsk.city",
++    "bresler.ru",
++    "bris-cloud.ru",
++    "broker-sb.ru",
++    "bsoinsur.online",
++    "bsoinsur.ru",
++    "bstu.ru",
++    "btlabs.ru",
++    "buhphone.ru",
++    "cap.ru",
++    "capitalkredit.ru",
++    "cardio.ru",
++    "cashtoyou.ru",
++    "cbch.ru",
++    "cbr.ru",
++    "cbrca.ru",
++    "ccb.com",
++    "ccbrussia.ru",
++    "cchgeu.ru",
++    "centr-invest.ru",
++    "centrinvest.ru",
++    "cetelem-bank.ru",
++    "cetelem.ru",
++    "cfb.ru",
++    "cfmc.ru",
++    "cge48.ru",
++    "championat.com",
++    "chance48.ru",
++    "chelinvest.ru",
++    "citto.ru",
++    "cmd-online.ru",
++    "cmd.su",
++    "cmirit.ru",
++    "cmrbank.ru",
++    "cnshb.ru",
++    "cobrain.ai",
++    "cobrain.io",
++    "commim.spb.ru",
++    "conceptgroup.ru",
++    "corpkometa.ru",
++    "cp.sbercloud.dev",
++    "cplsb.ru",
++    "crediteurope.ru",
++    "creditural.ru",
++    "crie.ru",
++    "crimearw.ru",
++    "crm.sberclass.ru",
++    "crpt.ru",
++    "cryptocom.ru",
++    "cryptopro.ru",
++    "cscampus.ru",
++    "csdnevnik.ru",
++    "csmoisport.ru",
++    "csr43.ru",
++    "custody.ru",
++    "customs.gov.ru",
++    "czko.ru",
++    "d-cd.net",
++    "dbo.szrcvtb.ru",
++    "dcapital.ru",
++    "dekart.ru",
++    "delfin-tour.ru",
++    "delikateska.ru",
++    "delo.ru",
++    "deltacredit.ru",
++    "dengisrazy.ru",
++    "denizbank.ru",
++    "depository.ru",
++    "derzhava.ru",
++    "detinso.ru",
++    "digitalreg.ru",
++    "dnevnik.ru",
++    "dobrozaim.ru",
++    "docdoc.pro",
++    "docdoc.ru",
++    "docdoc.tel",
++    "doktor.kr",
++    "domclick.ru",
++    "donland.ru",
++    "donses.ru",
++    "drive2.ru",
++    "driveclick.ru",
++    "ds89.ru",
++    "dtb1.ru",
++    "dtln.ru",
++    "dtnetwork.ru",
++    "dtrading.ru",
++    "dvbank.ru",
++    "e-signature.pro",
++    "eapteka.ru",
++    "eatpbank.ru",
++    "econs.online",
++    "edmon.ru",
++    "edu22.info",
++    "efbank.ru",
++    "egais.plus",
++    "energotransbank.com",
++    "englishteachers.ru",
++    "erkapharm.su",
++    "esphere.ru",
++    "etton.net",
++    "etton.ru",
++    "euroalliance.ru",
++    "evotor.ru",
++    "evotorpay.ru",
++    "evrofinance.ru",
++    "exiar.ru",
++    "eximbank.ru",
++    "expobank.org",
++    "expobank.ru",
++    "exportcenter.ru",
++    "ext2cs.cardstandard.ru",
++    "facef.ru",
++    "factoring.ru",
++    "faktura.ru",
++    "feonet.net",
++    "fes.nspk.ru",
++    "ffin.ru",
++    "fiberside.ru",
++    "finam.ru",
++    "finambank.ru",
++    "finandauto.ru",
++    "fincult.info",
++    "finproinvest.com",
++    "finproinvest.ru",
++    "fintender.ru",
++    "finuslugi.ru",
++    "first-am.ru",
++    "fkr78.ru",
++    "flamp.ru",
++    "fomsrt.ru",
++    "fonbet.ru",
++    "fonema.ru",
++    "fontvielle.ru",
++    "forabank.ru",
++    "forus.ru",
++    "freedom24.ru",
++    "frhc.group",
++    "fs-mdlp.ru",
++    "fsin.gov.ru",
++    "fso.gov.ru",
++    "ft-crypto.ru",
++    "g45.tambov.gov.ru",
++    "gasu.gov.ru",
++    "gasu.ru",
++    "gazeks.com",
++    "gazeta.ru",
++    "gazfond-pn.ru",
++    "gdou26skazka.ru",
++    "gebank.ru",
++    "gemotest.ru",
++    "geopolis.ru",
++    "geosteering.ru",
++    "getfinance.ru",
++    "gi-bank.ru",
++    "gidapteka.ru",
++    "gimnazist1.ru",
++    "gis-tek.ru",
++    "gisogdro.ru",
++    "givc.ru",
++    "gk-rossiya.ru",
++    "gkp1.ru",
++    "gorbank.spb.ru",
++    "gorinfo.net",
++    "gorod74.ru",
++    "gosuslugi.ru",
++    "gov39.ru",
++    "gov74.ru",
++    "government.ru",
++    "gpbspace.ru",
++    "gpkk.ru",
++    "gpm.ru",
++    "grandsmeta.store",
++    "greatcircus.ru",
++    "grfc.ru",
++    "groteck.ru",
++    "gsnspb.ru",
++    "gutagroup.ru",
++    "h43.ru",
++    "halva.express",
++    "halvacard.ru",
++    "halvaclick.ru",
++    "halvapridi.ru",
++    "hh.ru",
++    "hmnpf.ru",
++    "iac.spb.ru",
++    "ibam.ru",
++    "icard-prod.ru",
++    "icard.cards",
++    "id-solutions.ru",
++    "idpoint.ru",
++    "iep.ru",
++    "ihead.ru",
++    "iitrust.info",
++    "iitrust.link",
++    "iitrust.lk",
++    "iitrust.online",
++    "iitrust.ru",
++    "iitrust.site",
++    "ikb-rs.ru",
++    "ikir.ru",
++    "imgsmail.ru",
++    "in-bank.ru",
++    "incomsib.ru",
++    "infarktanet.ru",
++    "infodec.ru",
++    "infosysco.ru",
++    "ingos-m.ru",
++    "ingos.ru",
++    "ingospensiya.ru",
++    "intbel.ru",
++    "integro.ru",
++    "intercomp.az",
++    "intercomp.kz",
++    "intercomp.ru",
++    "intercompglobal.com",
++    "investkuban.ru",
++    "investpay.ru",
++    "ipb.ru",
++    "ipc.tsc.ru",
++    "ippay.ru",
++    "ippay.su",
++    "ircsm.ru",
++    "isiao.gov.spb.ru",
++    "it-expertise.ru",
++    "it-uk.ru",
++    "itb.ru",
++    "itc48.ru",
++    "itgkh.ru",
++    "iticapital.ru",
++    "ittrade.ru",
++    "ivi.ru",
++    "kamaz.org",
++    "kamaz.ru",
++    "kaplife.ru",
++    "kbki.ru",
++    "kebrus.ru",
++    "kemsu.ru",
++    "kges.ru",
++    "khv27.ru",
++    "kilbil.ru",
++    "km-bank.ru",
++    "kolobox.ru",
++    "komiaviatrans.ru",
++    "kommersant.ru",
++    "kpbs.ru",
++    "krascor.ru",
++    "krasgmu.ru",
++    "krasnipi.ru",
++    "krasnodar.ru",
++    "kremlin.ru",
++    "kremlinbank.ru",
++    "ksu.edu.ru",
++    "kubanfarm.ru",
++    "kurgan-telecom.net",
++    "kuzbasshimbank.ru",
++    "kv-gelendzhik.ru",
++    "labtest.ru",
++    "ldskapustin.ru",
++    "lenta.ru",
++    "libyaya.ru",
++    "licey7minusa.ru",
++    "lifeingos.ru",
++    "lifepoint.club",
++    "lightcab.ru",
++    "livejournal.com",
++    "lk.sberpb.ru",
++    "lmsic.com",
++    "lockobank.ru",
++    "lockomarket.ru",
++    "logoped-tinao.ru",
++    "lti-gti.ru",
++    "mail.ru",
++    "makc.ru",
++    "makclife.ru",
++    "makcm.ru",
++    "mari-el.gov.ru",
++    "maritimebank.com",
++    "markhotel.ru",
++    "materiamedica.ru",
++    "matrixmobile.ru",
++    "mbkuban.ru",
++    "mddc.ai",
++    "mddc.ru",
++    "mednsk.ru",
++    "metrolonline.ru",
++    "mgsu.ru",
++    "mil.ru",
++    "mineco04.ru",
++    "minsport.gov.ru",
++    "minstroyrf.ru",
++    "mintrud.gov.ru",
++    "misrv.com",
++    "mitcoms.ru",
++    "mkb-am.ru",
++    "mkb-broker.ru",
++    "mksmail.ru",
++    "mng.sbercloud.tech",
++    "mnpf-akvilon.ru",
++    "modernsys.ru",
++    "modulbank.ru",
++    "moesk.ru",
++    "moex.com",
++    "moezdo.ru",
++    "moisport.ru",
++    "molnet.ru",
++    "moneta.ru",
++    "mont.ru",
++    "mos.ru",
++    "moscombank.ru",
++    "moscoms.ru",
++    "moskb.ru",
++    "mosoblbank.ru",
++    "mospolytech.ru",
++    "mrz.ru",
++    "ms-box.ru",
++    "mse.ru",
++    "mtcfinance.ru",
++    "mtx.ru",
++    "murmankukla.ru",
++    "mysbertips.ru",
++    "myspar.ru",
++    "myworkcard.ru",
++    "mzdorovie.com",
++    "n1.ru",
++    "n3health.ru",
++    "na-lenskoy.ru",
++    "napolke.ru",
++    "nbdbank.ru",
++    "ncfu.net",
++    "ncfu.ru",
++    "neisri.ru",
++    "netpost.ru",
++    "nexign-systems.com",
++    "nexign.com",
++    "ngp1.ru",
++    "niac.ru",
++    "nic.ru",
++    "nii-vektor.ru",
++    "nipbank.ru",
++    "nko-rr.ru",
++    "north-east.ru",
++    "norvikbank.online",
++    "norvikbank.ru",
++    "novikom.ru",
++    "novobank.ru",
++    "novokib.ru",
++    "npc.ba",
++    "npf-sng.ru",
++    "npf-transneft.ru",
++    "npfb.ru",
++    "npfsb.ru",
++    "npfsberbanka.ru",
++    "npfsocium.ru",
++    "nsd.ru",
++    "nsg-ins.ru",
++    "nso.ru",
++    "nsrz.ru",
++    "nucrf.ru",
++    "nvkvd.ru",
++    "nvtc.ru",
++    "o-courier.ru",
++    "oao-ntek.ru",
++    "oboronregistr.ru",
++    "office-mob.ru",
++    "office-mobile.ru",
++    "ofukem.ru",
++    "okbhmao.ru",
++    "ombsk.biz",
++    "omk.ru",
++    "oneclickmoney.ru",
++    "open-s.info",
++    "open-s.su",
++    "open.ru",
++    "openfactoring.ru",
++    "ores-karelia.ru",
++    "ores-ptz.ru",
++    "ot.ru",
++    "oviont.ru",
++    "ozon-dostavka.ru",
++    "ozon.ru",
++    "paritet.ru",
++    "pay47.ru",
++    "payanyway.ru",
++    "payhd.ru",
++    "payhd.su",
++    "payment.ru",
++    "paymgate.ru",
++    "pba.su",
++    "pcbk.ru",
++    "pcr.ru",
++    "peremena.group",
++    "perinatal-tula.ru",
++    "pervbank.ru",
++    "petrsu.ru",
++    "pharma-soft.ru",
++    "phyche.ac.ru",
++    "pkg.sbercloud.tech",
++    "planar-elements.ru",
++    "plat-forma.ru",
++    "pluspay.ru",
++    "pnpi.nrcki.ru",
++    "pnpi.nw.ru",
++    "pnzgu.ru",
++    "podzemng.ru",
++    "poi.dvo.ru",
++    "prim-edu.ru",
++    "prime.infotecs.ru",
++    "primorsky.ru",
++    "private-banking.ru",
++    "prostobank.online",
++    "psati.ru",
++    "psbank.ru",
++    "psbnk.msk.ru",
++    "psbst.ru",
++    "pskov.ru",
++    "psuti.ru",
++    "py28.ru",
++    "raif.ru",
++    "raiffeisen-capital.ru",
++    "raiffeisen.ru",
++    "ramako.ru",
++    "rambler.ru",
++    "rapida.ru",
++    "rawenstvo.ru",
++    "rcitsakha.ru",
++    "rdb.ru",
++    "realistbank.ru",
++    "reg60.ru",
++    "reggarant.ru",
++    "region.broker",
++    "region.ru",
++    "regkrc.ru",
++    "renlife.ru",
++    "rentabank.ru",
++    "reso-life.ru",
++    "reso.ru",
++    "resocreditbank.ru",
++    "restospace.com",
++    "retailiqa.ru",
++    "rgs.ru",
++    "rgsbank.ru",
++    "risp.ru",
++    "rlisystems.ru",
++    "rmk.stavedu.ru",
++    "rncb.ru",
++    "rnrc.ru",
++    "rop.ru",
++    "rosbank-auto.ru",
++    "rosbank-capital.ru",
++    "rosbank-dom.ru",
++    "rosbank-leasing.ru",
++    "rosbank.ru",
++    "roscartography.ru",
++    "roscongress.org",
++    "rosfon.com",
++    "rosfondom.ru",
++    "roskazna.gov.ru",
++    "roskazna.ru",
++    "rosmintrud.ru",
++    "rosminzdrav.ru",
++    "rosomz.ru",
++    "rosseti-kuban.ru",
++    "rosseti-yug.ru",
++    "rossetimr.ru",
++    "rostatus.ru",
++    "royal-bank.ru",
++    "rrb.ru",
++    "rrbank.ru",
++    "rrtp.ru",
++    "rshb-ins.ru",
++    "rshb.ru",
++    "rshbins-life.ru",
++    "rshbins.ru",
++    "rsue.ru",
++    "rt-dc.ru",
++    "rt-solar.ru",
++    "rt.ru",
++    "rtlq.ru",
++    "rts-tender.ru",
++    "ruhiv.ru",
++    "runa.ru",
++    "ruru.ru",
++    "rusfinance.ru",
++    "rusfincorp.ru",
++    "rusfund.ru",
++    "rustest.ru",
++    "rzb.ru",
++    "s2b.tech",
++    "saby.dev",
++    "saby.ru",
++    "sabyc.ru",
++    "sabyd.ru",
++    "sabyget.ru",
++    "sabytrade.ru",
++    "sadikclick.ru",
++    "sakha.gov.ru",
++    "samregion.ru",
++    "sapod.ru",
++    "sarnotary.ru",
++    "sbbank.ru",
++    "sbbuild.ru",
++    "sbdevelop.ru",
++    "sber-am.ru",
++    "sber-solutions.az",
++    "sber-solutions.com",
++    "sber-solutions.group",
++    "sber-solutions.kz",
++    "sber-solutions.ru",
++    "sber-zvuk.com",
++    "sber.education",
++    "sber.insure",
++    "sber.me",
++    "sber.university",
++    "sber247.ru",
++    "sber9may.ru",
++    "sberanalytics.ru",
++    "sberautopark.ru",
++    "sberautopodpiska.ru",
++    "sberavtopark.ru",
++    "sberavtopodpiska.ru",
++    "sberbank-factoring.ru",
++    "sberbank-university.ru",
++    "sberbankaktivno.ru",
++    "sberbankins.ru",
++    "sberbankvmeste.ru",
++    "sberbuild.ru",
++    "sbercar.ru",
++    "sbercloud.ru",
++    "sberdevices.ru",
++    "sberdisk.biz",
++    "sberdisk.ru",
++    "sberfactoring.ru",
++    "sberfiles.com",
++    "sberfn.ru",
++    "sberhealth.pro",
++    "sberhealth.ru",
++    "sberins.ru",
++    "sberlogistics.ru",
++    "sbermarketing.ru",
++    "sbermed.ai",
++    "sbermedai.ru",
++    "sbermobile.ru",
++    "sberuniversity.online",
++    "sbervmeste.ru",
++    "sberxba.ru",
++    "sberzdorovie.ru",
++    "sberzdorovye.ru",
++    "sbfc.ru",
++    "sbibankllc.ru",
++    "sbis.link",
++    "sbis.ru",
++    "sblogistica.ru",
++    "sbnk.ru",
++    "sbp-med.ru",
++    "sbrf-capital.ru",
++    "sbrf.ru",
++    "sbspasibo.ru",
++    "sc490-spb.ru",
++    "scaling.sbc.space",
++    "scb-vdi.ru",
++    "school-134.ru",
++    "sdco.ru",
++    "sdkgarant.ru",
++    "sdm.ru",
++    "secgw.ru",
++    "senat.cloud",
++    "sergeykhotimskiy.ru",
++    "sermet.ru",
++    "servis-reestr.ru",
++    "sfn-am.ru",
++    "shakhty-gorod.ru",
++    "shiptor.ru",
++    "sibnet.ru",
++    "sinara.ru",
++    "sineft.ru",
++    "sistemagorod.ru",
++    "skbbank.ru",
++    "skblab.ru",
++    "skc-fmba.ru",
++    "skgelios.ru",
++    "slavbank.ru",
++    "slbank.ru",
++    "slon-e.ru",
++    "smart-uk.ru",
++    "smartc-sbrf.ru",
++    "smartmed.center",
++    "smpbank.ru",
++    "smrtc.ru",
++    "sngb.ru",
++    "sog.ru",
++    "sogaz-med.ru",
++    "soglasie.ru",
++    "solarlab.ru",
++    "solarsecurity.ru",
++    "solbum.ru",
++    "solid.com.ru",
++    "solid.ru",
++    "solidbroker.ru",
++    "solidsk.ru",
++    "sopomosch.ru",
++    "sos112prim.ru",
++    "sov-teh.com",
++    "sovcombank-leasing.ru",
++    "sovcombank.business",
++    "sovcombank.credit",
++    "sovcombank.group",
++    "sovcombank.ru",
++    "sovcomins.ru",
++    "sovcomlife.ru",
++    "sovlink.ru",
++    "spas-ipoteka.ru",
++    "spasibo.digital",
++    "spasibosb.ru",
++    "spasibosberbank.travel",
++    "spasibotest.ru",
++    "spasskievorota.ru",
++    "spb112.ru",
++    "spbexchange.ru",
++    "specped.ru",
++    "sppltd.org",
++    "sppltd.ru",
++    "sravni.market",
++    "src-planeta.ru",
++    "srmfc.ru",
++    "star-pro.ru",
++    "stavkray.ru",
++    "stavregion.ru",
++    "strelkacard.ru",
++    "sura-ib.ru",
++    "svet17.ru",
++    "svg.ru",
++    "svp.sbercloud.dev",
++    "sweets-shop.ru",
++    "syktsu.ru",
++    "symptomcheker.ru",
++    "sz.gkovd.ru",
++    "t-tel.ru",
++    "t72.ru",
++    "tag-me.ru",
++    "tagme.space",
++    "taifnk.ru",
++    "tax23.ru",
++    "tcinet.ru",
++    "technolog.edu.ru",
++    "technologiya.ru",
++    "tele2.ru",
++    "tele2med.ru",
++    "tensor.ru",
++    "tes.ru",
++    "tfi-urfo.ru",
++    "tfomseao.ru",
++    "thlotos.com",
++    "timerbank.ru",
++    "tinaki.ru",
++    "titins.ru",
++    "tivision.ru",
++    "tkbbank.ru",
++    "tkbip.ru",
++    "tomsk.gov.ru",
++    "torgi.gov.ru",
++    "torgi223.ru",
++    "tot.technology",
++    "tradernet.ru",
++    "transneft.ru",
++    "transoil.com",
++    "transstroybank.ru",
++    "tuvsu.ru",
++    "tyumen-polis.ru",
++    "uecard.ru",
++    "ufb.ru",
++    "ugmk-telecom.ru",
++    "ugpss48.ru",
++    "ugsk.ru",
++    "ulregion.ru",
++    "unityre.ru",
++    "upravkom.ru",
++    "upravlyaem.ru",
++    "uralsib.ru",
++    "uriit.ru",
++    "uszn-taganrog.ru",
++    "utmn.ru",
++    "v2b.ru",
++    "vgasu.vrn.ru",
++    "vitains.ru",
++    "vniigaz.ru",
++    "voiptools.ru",
++    "volga-capital.ru",
++    "vorkuta.ru",
++    "vp.ru",
++    "vrnds.ru",
++    "vsa.ru",
++    "vseplatezhi.ru",
++    "vtb.com",
++    "vtb.ru",
++    "vtb24.ru",
++    "vtbbo.ru",
++    "vtbnpf.ru",
++    "vtbr.ru",
++    "vtbsd.ru",
++    "vtbstrana.ru",
++    "vtkbank.ru",
++    "vysota-bonus.ru",
++    "vzljot.ru",
++    "wasaby.dev",
++    "wineexpress.ru",
++    "xn-----7kcackduzn2bc8avjg.xn--p1ai",
++    "xn----7sbanj0ai9al2a.xn--p1ai",
++    "xn----7sbapuabrmfgqwngje3etj.xn--p1ai",
++    "xn----7sbbfrodpunestbpv6a7knb.xn--p1ai",
++    "xn----7sbbg4agcddf6aammjdhk1r.xn--p1ai",
++    "xn----8sbabidrwm9ab6atjf.xn--p1ai",
++    "xn----8sbalgtaqconcpuji4ai0e.xn--p1ai",
++    "xn----8sbcgzpu.xn--p1ai",
++    "xn--80aa2abfodnqc1e7a6c.xn--80asehdb",
++    "xn--80aaabuuaqgs5ajv.xn--p1ai",
++    "xn--80aafyfbdcf3aallidhj1q.xn--p1ai",
++    "xn--80aapjlqdvtdo.xn--p1ai",
++    "xn--80abfumr.xn--p1ai",
++    "xn--80adxhks.xn--p1ai",
++    "xn--80aishalwf.xn--p1ai",
++    "xn--80akicokc0aablc.xn--p1ai",
++    "xn--90acfdcj4caode5l.xn--p1ai",
++    "xn--90ae9be.xn--p1ai",
++    "xn--90anlfbebar6i.xn--p1ai",
++    "xn--90arfhfch6b.xn--p1ai",
++    "xn--90axmqc.xn--p1ai",
++    "xn--b1agzlht.xn--p1ai",
++    "xn--d1aarbrc.xn--p1ai",
++    "yoobusiness.ru",
++    "yookassa.com",
++    "yookassa.ru",
++    "yoomoney.com",
++    "yoomoney.ru",
++    "yooteam.ru",
++    "yuginterseti.ru",
++    "z-it.ru",
++    "zakaznso.ru",
++    "zakupki.gov.ru",
++    "zao-srk.ru",
++    "zappstore.pro",
++    "zolla.com",
++    "zolla.ru",
++    "zpp.spb.ru",
++    "zsnso.ru",
++    "09.rospotrebnadzor.ru",
++    "1cfresh.ru",
++    "1class.petersburgedu.ru",
++    "1elecsnet.ru",
++    "22-1.ru",
++    "22.ctlog.digital.gov.ru",
++    "23.ctlog.digital.gov.ru",
++    "26gosuslugi.ru",
++    "36.rospotrebnadzor.ru",
++    "3ds.mmbank.ru",
++    "43.rospotrebnadzor.ru",
++    "45.rospotrebnadzor.ru",
++    "52.rospotrebnadzor.ru",
++    "56.rospotrebnadzor.ru",
++    "acs1.vbank.ru",
++    "acs2.smpcards.ru",
++    "acs2.vbank.ru",
++    "acstest.smpcards.ru",
++    "acstest.vbank.ru",
++    "acsv2.cardstandard.ru",
++    "admin.bp.minpromtorg.gov.ru",
++    "admin.budget.minpromtorg.gov.ru",
++    "admin.kids.minpromtorg.gov.ru",
++    "akibank.ru",
++    "aml.vbank.ru",
++    "andreytravnikov.ru",
++    "ank-pki.ru",
++    "aonb.astranet.ru",
++    "apadp.openbank.ru",
++    "api.sbercloud.tech",
++    "api1.openbank.ru",
++    "ard.moscow",
++    "armdoo.petersburgedu.ru",
++    "aslife.ru",
++    "aso.bashkortostan.ru",
++    "asoft.su",
++    "atb.su",
++    "atk26.ru",
++    "auth.sbercloud.tech",
++    "autodiscover.ffcorp.ru",
++    "autodiscover.investcapitalbank.ru",
++    "autodiscover.rubytech.ru",
++    "autodiscovery.a-sbrf.ru",
++    "autodiscovery.barus.ooo",
++    "autodiscovery.baruscorp.ru",
++    "autodiscovery.infoteh.ooo",
++    "autodiscovery.infotehdc.ru",
++    "autodiscovery.sbcc.ru",
++    "avangard-garant.ru",
++    "aversbank.ru",
++    "aviars.ru",
++    "avitek.ru",
++    "awad1.voz.ru",
++    "awad2.voz.ru",
++    "awens.voz.ru",
++    "awgate.vbank.ru",
++    "awseg1.voz.ru",
++    "awseg2.voz.ru",
++    "baltinvestbank.com",
++    "baltinvestbank.ru",
++    "bank.woori.ru",
++    "bankro.tech",
++    "banksoyuz.ru",
++    "bashgaz.ru",
++    "bca.umbank.ru",
++    "bcu.umbank.ru",
++    "billing-api.sbercloud.store",
++    "billing.sbercloud.store",
++    "biz360.ru",
++    "bonus-spasibo.ru",
++    "bspb.ru",
++    "c2b-sbp.openbank.ru",
++    "ca.centerit35.ru",
++    "cabinet.udomlya.ru",
++    "cbr-day.ru",
++    "cbr-online.ru",
++    "cbr2021.online",
++    "cbtest.vbank.ru",
++    "ccb.ru",
++    "cespi.directum.ru",
++    "chechnya.gov.ru",
++    "chsk.ru",
++    "chukotka-gov.ru",
++    "cloudm.voz.ru",
++    "co-ise.somecorp.ru",
++    "co-sfb2019ed01.somecorp.ru",
++    "co-sfb2019s01.somecorp.ru",
++    "coalmetbank.ru",
++    "cryptexpert.ru",
++    "cryptomir.nspk.ru",
++    "csenter.ru",
++    "cub-finance.ru",
++    "data-fusion.ru",
++    "databank.ru",
++    "dbo.ekt.uralsibbank.ru",
++    "dbo.nsk.uralsibbank.ru",
++    "dbo.ofc.ru",
++    "dbo.spb.uralsibbank.ru",
++    "dbo.ufa.uralsibbank.ru",
++    "dbo.uralsibbank.ru",
++    "dbo.urd.uralsibbank.ru",
++    "dbo.vbank.ru",
++    "dbo2.kuzbank.ru",
++    "dbo5.kuzbank.ru",
++    "dbogate.ofc.ru",
++    "dboul.baltinvest.com",
++    "dboul.baltinvest.ru",
++    "ddei.voz.ru",
++    "ddei1.voz.ru",
++    "ddei2.voz.ru",
++    "demo.bifit.ru",
++    "demoadmin.visitorcontrol.ru",
++    "demodbo.ofc.ru",
++    "demodbo.vbank.ru",
++    "dialin.voz.ru",
++    "disk.sbercloud.tech",
++    "divrating.ru",
++    "dni-fg.ru",
++    "do.ipk19.ru",
++    "dokhodchivo.ru",
++    "dol-igra.ru",
++    "doligra.ru",
++    "dsworks.ru",
++    "ekvant.baltinvest.com",
++    "elecsnet.ru",
++    "emb.ru",
++    "engburo.ru",
++    "epid-oki.ru",
++    "erul.gov.ru",
++    "es.ptz.ru",
++    "esed-redos.kodeks.ru",
++    "esmtp.voz.ru",
++    "expertiza.spb.ru",
++    "extapi1c.sbercloud.tech",
++    "factoring.ofc.ru",
++    "fcsm.ru",
++    "ffms.ru",
++    "finopolis.ru",
++    "finzachet.ru",
++    "forshtadt.ru",
++    "funds-custody.ru",
++    "gazprombank.investments",
++    "gazprombank.ru",
++    "gcup.spb.ru",
++    "geliuscap.ru",
++    "genbank.ru",
++    "ggnp-sales.ru",
++    "ggnpsales.ru",
++    "gibank.ru",
++    "git.sbercloud.tech",
++    "gpb.ru",
++    "gpbin.app",
++    "granatpay.ru",
++    "grasaro.ru",
++    "guestportal.somecorp.ru",
++    "gupti.ru",
++    "gutains.ru",
++    "gutapay.ru",
++    "gw1.zcloud.ru",
++    "hepreg.ru",
++    "hivresist.ru",
++    "ibank-1827.finsb.ru",
++    "ibank-nbsrf.ru",
++    "ibank.bankmaxima.ru",
++    "ibank.bankrmp.ru",
++    "ibank.doncombank.ru",
++    "ibank.mbbru.ru",
++    "ibank.mmbank.ru",
++    "ibank.psib.ru",
++    "ibank.sistemabank.ru",
++    "ibank.tagbank.ru",
++    "ibank.tpsb.com.ru",
++    "ibank2.bankmaxima.ru",
++    "ibank2.pskb.com",
++    "ibank2.rostfinance.ru",
++    "ibank2test-m.osdo.mmbank.ru",
++    "icbru.ru",
++    "ifcongress.ru",
++    "iktport.ru",
++    "infteh.ru",
++    "ingoauto.ru",
++    "inkakhran.ru",
++    "ipsec-cia.directum.ru",
++    "ipsec-main.directum.ru",
++    "ipsec-msk.directum.ru",
++    "ipsec.directum.ru",
++    "isnbank.ru",
++    "iso20022.ru",
++    "jira.sbercloud.tech",
++    "jirasd.sbercloud.tech",
++    "jirasm.sbercloud.tech",
++    "kamkombank.ru",
++    "kapmed.ru",
++    "kaspersky.ru",
++    "kbhmb.ru",
++    "kk.bank",
++    "kmbtraining.ru",
++    "krasmed.ru",
++    "ks.moscow",
++    "kubankredit.ru",
++    "ladoshkipay.ru",
++    "line-invest.ru",
++    "lk.alorbank.ru",
++    "lk.beforts.ru",
++    "lk.region-dk.ru",
++    "lyncdiscover.voz.ru",
++    "m1.zcloud.ru",
++    "mail.a-sbrf.ru",
++    "mail.admamr.ru",
++    "mail.barus.ooo",
++    "mail.baruscorp.ru",
++    "mail.ffcorp.ru",
++    "mail.infoteh.ooo",
++    "mail.infotehdc.ru",
++    "mail.rostfinance.ru",
++    "mail.rubytech.ru",
++    "mail.sbcc.ru",
++    "mail.sivilab.ru",
++    "mail.somecorp.ru",
++    "mail.tjmport.ru",
++    "mail2.rubytech.ru",
++    "marsu.ru",
++    "mb-partner.bm.ru",
++    "mcbank.ru",
++    "medexpress.ru",
++    "meet.voz.ru",
++    "mex1.voz.ru",
++    "mex2.voz.ru",
++    "migrakvota.gov.ru",
++    "mili-rest.ru",
++    "mlnt.ru",
++    "mobile-api.av.admtyumen.ru",
++    "mobile.vbank.ru",
++    "money1c.com",
++    "monitoring.sbercloud.dev",
++    "mti-bank.ru",
++    "muavr.ru",
++    "mvs-bank.ru",
++    "mydevices.somecorp.ru",
++    "namex.org",
++    "napolkelegal.ru",
++    "nco-payu.ru",
++    "newbank.ru",
++    "nkkdc.ru",
++    "non-tariff.gov.ru",
++    "npazsnso.ru",
++    "nrb.ru",
++    "ns-bank.ru",
++    "ns1.cit-sk.net",
++    "ns1.ihordns.net",
++    "ns2.cit-sk.net",
++    "ns2.ihordns.net",
++    "nsbank.ru",
++    "nslvtec.ru",
++    "nsopravo.ru",
++    "octan.ru",
++    "okbank.ru",
++    "okotovske.ru",
++    "olabank.ru",
++    "olb.ru",
++    "oms3ru.insp.ru",
++    "online.baltinvest.com",
++    "online.bank-mscb.ru",
++    "online.nsk.su",
++    "online.vbank.ru",
++    "online2.bankcard.ru",
++    "onlinebroker.ru",
++    "onlinedev.vbank.ru",
++    "open-cbr.ru",
++    "oreka.ru",
++    "ovaldbru.altx-soft.ru",
++    "owa.rubytech.ru",
++    "owa.spar-nn.ru",
++    "owa.spar.nnov.ru",
++    "owa.voz.ru",
++    "parking.spb.ru",
++    "partizansk.org",
++    "partnercmd.ru",
++    "pay.cardstandard.ru",
++    "pay.rkcgkh.ru",
++    "payctrl.vbank.ru",
++    "payctrltest.vbank.ru",
++    "pb.sbercloud.tech",
++    "pda-kotovsk.ru",
++    "pension-fg.ru",
++    "petadm.ru",
++    "pettown.ru",
++    "pkica2.beeline.ru",
++    "platiqr.ru",
++    "pokupay.ru",
++    "pol4.tomsk.ru",
++    "portal.gos.sbercloud.dev",
++    "portal.kuzbank.ru",
++    "post.a-sbrf.ru",
++    "ppfinsurance.ru",
++    "pw.sbercloud.tech",
++    "raif-am.ru",
++    "raif-capital.ru",
++    "raif-invest.ru",
++    "raif-partners.ru",
++    "raiffeisencapital.ru",
++    "randi.ru",
++    "rcg.agency",
++    "rcmru.ru",
++    "red-people.com",
++    "relay.baltinvest.com",
++    "relay.umecon.ru",
++    "reparm.ru",
++    "retail.kuzbank.ru",
++    "retail5.kuzbank.ru",
++    "rnko.ru",
++    "room485.com",
++    "rpnkirov.ru",
++    "russ-invest.com",
++    "rutls.leader-id.ru",
++    "s-t.ru",
++    "s3.gos.sbercloud.dev",
++    "sber-agent.ru",
++    "sber-impulse.com",
++    "sber-impulse.ru",
++    "sber-pravo.com",
++    "sber-pravo.info",
++    "sber-pravo.ru",
++    "sber-pravo.tech",
++    "sber-spief.ru",
++    "sber-unity.ru",
++    "sber.pro",
++    "sber.ru",
++    "sberactivno.ru",
++    "sberbank-cib.com",
++    "sberbank-cib.ru",
++    "sberbank-pb.ru",
++    "sberbank.com",
++    "sberbank.ru",
++    "sberbank1.ru",
++    "sberbankactivno.ru",
++    "sberbankspasibo.travel",
++    "sberbb.ru",
++    "sberbusiness.live",
++    "sberclickstream.ru",
++    "sbercloud.com",
++    "sbercloud.org",
++    "sbercrm.com",
++    "sbercrm.ru",
++    "sberegiplanetu.ru",
++    "sberimpulse.com",
++    "sberimpulse.ru",
++    "sberindex.ru",
++    "sberpravo.com",
++    "sberpravo.info",
++    "sberpravo.ru",
++    "sberpravo.tech",
++    "sberspasibo.ru",
++    "sbertv.ru",
++    "sberunity.ru",
++    "sbrf-cib.ru",
++    "sc.link",
++    "school2.glolime.ru",
++    "sdkgarant.online",
++    "sentry.sbercloud.tech",
++    "severgazbank.ru",
++    "sevesk.ru",
++    "sevnb.ru",
++    "sfbext.voz.ru",
++    "sibnet-download.ru",
++    "sibsoc.com",
++    "sibsoc.ru",
++    "sign.beeline.ru",
++    "sip.voz.ru",
++    "sipgw.binatel.org",
++    "sipgwauth.binatel.org",
++    "sipreg.binatel.org",
++    "sipsfb.voz.ru",
++    "slavia-bank.com",
++    "slavia-bank.ru",
++    "slaviabank.com",
++    "slaviabank.ru",
++    "smartway.today",
++    "smpgroup.ru",
++    "smponbank.ru",
++    "sobe.ru",
++    "sobinka-city.ru",
++    "softlab.ru",
++    "sogaz-life-new.sandbox.zetest.site",
++    "sogaz-life.ru",
++    "solidbank.ru",
++    "sonarplus.ru",
++    "spasibo.market",
++    "spasibosberbank.events",
++    "spasibosberbank.online",
++    "spasibosberbank.ru",
++    "sponsor.somecorp.ru",
++    "sponsor2.somecorp.ru",
++    "strelkapay.ru",
++    "svoedelo.blog",
++    "swtmedia.ru",
++    "tamcomsys.ru",
++    "tavrich.ru",
++    "tencar.ru",
++    "test.ct-log.ru",
++    "test.konversta.com",
++    "test.konversta.ru",
++    "test.krsk-sbit.ru",
++    "testdbo.gorbank.spb",
++    "testextapi1c.sbercloud.tech",
++    "tigersoft.ru",
++    "tochka.com",
++    "tpsbank.tomsk.ru",
++    "transportpay.ru",
++    "travel2mich.ru",
++    "uc.kadastr.ru",
++    "ucparma.ru",
++    "ufabank.ru",
++    "uln-ix.ru",
++    "vcbr.ru",
++    "vdi.krsk-sbit.ru",
++    "vipguest.somecorp.ru",
++    "vozvratnalogov.online",
++    "vpbx.binatel.org",
++    "vpbxsip.binatel.org",
++    "vpbxsiptrunk.binatel.org",
++    "vpn.ffcorp.ru",
++    "vpn.vbank.ru",
++    "vsesrazu-raiffeisen.ru",
++    "vtbcareer.com",
++    "web-pacient.ru",
++    "webconfsfb.voz.ru",
++    "weber-facade.ru",
++    "webservices.voz.ru",
++    "wiki.sbercloud.tech",
++    "wt.vektorpharm.ru",
++    "www.altx-soft.ru",
++    "www.electro-mpo.ru",
++    "www.my.domrfbank.ru",
++    "www.online.domrfbank.ru",
++    "www.psbinvest.ru",
++    "www.redcheck.ru",
++    "www.rostfinance.ru",
++    "www.rus-telecom.ru",
++    "www.sbcc.ru",
++    "www.smbbank.ru",
++    "www.tavrich.ru.ru",
++    "wwwscr.digitalaccess.ru",
++    "xn----7sbbdd0brby6a0m.xn--p1ai",
++    "xn----7sbbdrzkdqce2az7c0eo.xn--p1ai",
++    "xn----8sbahbhzjefje2bh0c.xn--p1ai",
++    "xn----8sbbgm1degce.xn--p1acf",
++    "xn----8sbbgm1degce.xn--p1ai",
++    "xn----ctbtwbliac6kg.xn--p1ai",
++    "xn----otbfciegbepjfxsx.xn--p1ai",
++    "xn--60-6kcdjn0djpdug.xn--p1ai",
++    "xn--68-6kcms6d.xn--p1ai",
++    "xn--80aabahoyob1afmqly.xn--p1ai",
++    "xn--80aacd4aobv3a8l.xn--p1ai",
++    "xn--80aacgalas3awh0amqckcv.xn--p1ai",
++    "xn--80aacgvulkfjl.xn--p1ai",
++    "xn--80aacovidocd0ax3c9dn.xn--p1ai",
++    "xn--80aafazdif3amxndk1k.xn--p1ai",
++    "xn--80aba0anrevc5c.xn--p1ai",
++    "xn--80abek1cdgbe.xn--p1acf",
++    "xn--80abek1cdgbe.xn--p1ai",
++    "xn--80abekqlximhq.xn--p1ai",
++    "xn--80abkczg7afy.xn--p1ai",
++    "xn--80ablwmcepr1b.xn--p1ai",
++    "xn--80abwairipka.xn--p1ai",
++    "xn--80aeeyvbeh4e6a.xn--p1ai",
++    "xn--90a5b.xn--p1ai",
++    "xn--90aciba4b0afgk.xn--p1ai",
++    "xn--90ad3ap.xn--p1ai",
++    "xn--90axl.xn--p1ai",
++    "xn--b1aook.xn--p1ai",
++    "xn--c1ajbkjyncd.xn--p1ai",
++    "zagorodtelecom.ru",
++    "zhivagobank.ru",
++    "zirax.com",
++    "zskuzbass.ru",
++};
++
++CertificateList* g_domestic_roots_for_testing;
++std::string* g_allowlisted_host_for_testing;
++}  // namespace
++
++const CertificateList& GetDomesticRoots() {
++  if (g_domestic_roots_for_testing) {
++    return *g_domestic_roots_for_testing;
++  }
++
++#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
++  static const base::NoDestructor<CertificateList> domestic_roots(
++      X509Certificate::CreateCertificateListFromBytes(
++          base::as_bytes(base::make_span(kDomesticRootCert)),
++          X509Certificate::FORMAT_PEM_CERT_SEQUENCE));
++#else
++  static const base::NoDestructor<CertificateList> domestic_roots;
++#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
++
++  return *domestic_roots;
++}
++
++bool IsAllowlistedDomesticRootHost(base::StringPiece hostname) {
++  if (g_allowlisted_host_for_testing) {
++    return hostname == *g_allowlisted_host_for_testing;
++  }
++
++  for (const auto& pattern : kDomesticRootAllowlist) {
++    if (hostname == pattern) {
++      return true;
++    }
++    if (hostname.size() > pattern.size() + 1 &&
++        base::EndsWith(hostname, pattern) &&
++        hostname[hostname.size() - pattern.size() - 1] == '.') {
++      return true;
++    }
++  }
++  return false;
++}
++
++void SetDomesticRootsForTesting(CertificateList* roots) {
++  g_domestic_roots_for_testing = roots;
++}
++
++void SetAllowlistedDomesticRootHostForTesting(std::string* hostname) {
++  g_allowlisted_host_for_testing = hostname;
++}
++
++}  // namespace net
+diff --git a/net/base/domestic_roots.h b/net/base/domestic_roots.h
+new file mode 100644
+index 0000000000000..cd7fe0cf24d5d
+--- /dev/null
++++ b/net/base/domestic_roots.h
+@@ -0,0 +1,19 @@
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#ifndef NET_BASE_DOMESTIC_ROOTS_H_
++#define NET_BASE_DOMESTIC_ROOTS_H_
++
++#include "base/strings/string_piece.h"
++#include "net/base/net_export.h"
++#include "net/cert/x509_certificate.h"
++
++namespace net {
++const CertificateList& NET_EXPORT GetDomesticRoots();
++
++bool NET_EXPORT IsAllowlistedDomesticRootHost(base::StringPiece hostname);
++
++void NET_EXPORT SetDomesticRootsForTesting(CertificateList* roots);
++
++void NET_EXPORT SetAllowlistedDomesticRootHostForTesting(std::string* hostname);
++}  // namespace net
++
++#endif  // NET_BASE_DOMESTIC_ROOTS_H_
+diff --git a/net/base/domestic_roots_unittest.cc b/net/base/domestic_roots_unittest.cc
+new file mode 100644
+index 0000000000000..8edb4c6184999
+--- /dev/null
++++ b/net/base/domestic_roots_unittest.cc
+@@ -0,0 +1,24 @@
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++
++#include "net/base/domestic_roots.h"
++#include "gtest/gtest.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace net {
++
++TEST(DomesticRootsTest, GetDomesticRoots) {
++  const auto& domestic_roots = GetDomesticRoots();
++  ASSERT_EQ(domestic_roots.size(), 1u);
++
++  EXPECT_EQ(domestic_roots[0]->subject().GetDisplayName(),
++            "Russian Trusted Root CA");
++}
++
++TEST(DomesticRootsTest, Allowlist) {
++  EXPECT_TRUE(IsAllowlistedDomesticRootHost("www.vtb.ru"));
++  EXPECT_TRUE(IsAllowlistedDomesticRootHost("vtb.ru"));
++  EXPECT_FALSE(IsAllowlistedDomesticRootHost("notfound.ru"));
++  EXPECT_FALSE(IsAllowlistedDomesticRootHost("google.com"));
++}
++
++}  // namespace net
+\ No newline at end of file
+diff --git a/net/cert/cert_verify_proc.cc b/net/cert/cert_verify_proc.cc
+index eaeb8416f8bcd..853d27e69cef9 100644
+--- a/net/cert/cert_verify_proc.cc
++++ b/net/cert/cert_verify_proc.cc
+@@ -13,6 +13,9 @@
+ #include "base/metrics/histogram.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/metrics/histogram_macros.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "base/no_destructor.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "base/strings/strcat.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/stringprintf.h"
+@@ -21,6 +24,9 @@
+ #include "build/build_config.h"
+ #include "crypto/crypto_buildflags.h"
+ #include "crypto/sha2.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "net/base/domestic_roots.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "net/base/features.h"
+ #include "net/base/net_errors.h"
+ #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+@@ -567,10 +573,29 @@ int CertVerifyProc::Verify(X509Certificate* cert,
+   verify_result->Reset();
+   verify_result->verified_cert = cert;
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  const auto& domestic_trust_anchors = GetDomesticRoots();
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   DCHECK(crl_set);
+-  int rv =
+-      VerifyInternal(cert, hostname, ocsp_response, sct_list, flags, crl_set,
+-                     additional_trust_anchors, verify_result, net_log);
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  int rv = VerifyInternalWithDomesticAnchors(
++      cert, hostname, ocsp_response, sct_list, flags, crl_set,
++      additional_trust_anchors, verify_result, net_log, domestic_trust_anchors);
++
++  if (verify_result->verified_cert &&
++      !verify_result->verified_cert->intermediate_buffers().empty()) {
++    const auto& trust_anchor =
++        verify_result->verified_cert->intermediate_buffers().back();
++    for (const auto& root : domestic_trust_anchors) {
++      if (x509_util::CryptoBufferEqual(trust_anchor.get(),
++                                       root->cert_buffer())) {
++        verify_result->is_issued_by_known_root = true;
++        break;
++      }
++    }
++  }
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ 
+   // Check for mismatched signature algorithms and unknown signature algorithms
+   // in the chain. Also fills in the has_* booleans for the digest algorithms
+@@ -769,6 +794,23 @@ void CertVerifyProc::LogNameNormalizationMetrics(
+                              NameNormalizationResult::kByteEqual);
+ }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++int CertVerifyProc::VerifyInternalWithDomesticAnchors(
++    X509Certificate* cert,
++    const std::string& hostname,
++    const std::string& ocsp_response,
++    const std::string& sct_list,
++    int flags,
++    CRLSet* crl_set,
++    const CertificateList& additional_trust_anchors,
++    CertVerifyResult* verify_result,
++    const NetLogWithSource& net_log,
++    const CertificateList& domestic_trust_anchors) {
++  return VerifyInternal(cert, hostname, ocsp_response, sct_list, flags, crl_set,
++                        additional_trust_anchors, verify_result, net_log);
++}
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+ // CheckNameConstraints verifies that every name in |dns_names| is in one of
+ // the domains specified by |domains|.
+ static bool CheckNameConstraints(const std::vector<std::string>& dns_names,
+diff --git a/net/cert/cert_verify_proc.h b/net/cert/cert_verify_proc.h
+index 32e9fb1f8b038..9de0f3e500389 100644
+--- a/net/cert/cert_verify_proc.h
++++ b/net/cert/cert_verify_proc.h
+@@ -189,6 +189,20 @@ class NET_EXPORT CertVerifyProc
+                              CertVerifyResult* verify_result,
+                              const NetLogWithSource& net_log) = 0;
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  virtual int VerifyInternalWithDomesticAnchors(
++      X509Certificate* cert,
++      const std::string& hostname,
++      const std::string& ocsp_response,
++      const std::string& sct_list,
++      int flags,
++      CRLSet* crl_set,
++      const CertificateList& additional_trust_anchors,
++      CertVerifyResult* verify_result,
++      const NetLogWithSource& net_log,
++      const CertificateList& domestic_trust_anchors);
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   // HasNameConstraintsViolation returns true iff one of |public_key_hashes|
+   // (which are hashes of SubjectPublicKeyInfo structures) has name constraints
+   // imposed on it and the names in |dns_names| are not permitted.
+diff --git a/net/cert/cert_verify_proc_builtin.cc b/net/cert/cert_verify_proc_builtin.cc
+index 86a588c84dbdf..03be7d920eb73 100644
+--- a/net/cert/cert_verify_proc_builtin.cc
++++ b/net/cert/cert_verify_proc_builtin.cc
+@@ -10,6 +10,9 @@
+ 
+ #include "base/logging.h"
+ #include "base/memory/raw_ptr.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "base/notreached.h"
++// Copyright (c) 2017 The Chromium Authors. All rights reserved.
+ #include "base/strings/string_piece.h"
+ #include "base/values.h"
+ #include "crypto/sha2.h"
+@@ -424,6 +427,20 @@ class CertVerifyProcBuiltin : public CertVerifyProc {
+                      CertVerifyResult* verify_result,
+                      const NetLogWithSource& net_log) override;
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  int VerifyInternalWithDomesticAnchors(
++      X509Certificate* cert,
++      const std::string& hostname,
++      const std::string& ocsp_response,
++      const std::string& sct_list,
++      int flags,
++      CRLSet* crl_set,
++      const CertificateList& additional_trust_anchors,
++      CertVerifyResult* verify_result,
++      const NetLogWithSource& net_log,
++      const CertificateList& domestic_trust_anchors) override;
++// Copyright (c) 2017 The Chromium Authors. All rights reserved.
++
+   scoped_refptr<CertNetFetcher> net_fetcher_;
+   std::unique_ptr<SystemTrustStore> system_trust_store_;
+ };
+@@ -722,7 +739,9 @@ bool CanTryAgainWithWeakerDigestPolicy(const CertPathBuilder::Result& result) {
+       cert_errors::kUnacceptableSignatureAlgorithm);
+ }
+ 
+-int CertVerifyProcBuiltin::VerifyInternal(
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++int CertVerifyProcBuiltin::VerifyInternalWithDomesticAnchors(
++// Copyright (c) 2017 The Chromium Authors. All rights reserved.
+     X509Certificate* input_cert,
+     const std::string& hostname,
+     const std::string& ocsp_response,
+@@ -731,7 +750,10 @@ int CertVerifyProcBuiltin::VerifyInternal(
+     CRLSet* crl_set,
+     const CertificateList& additional_trust_anchors,
+     CertVerifyResult* verify_result,
+-    const NetLogWithSource& net_log) {
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++    const NetLogWithSource& net_log,
++    const CertificateList& domestic_trust_anchors) {
++// Copyright (c) 2017 The Chromium Authors. All rights reserved.
+   // VerifyInternal() is expected to carry out verifications using the current
+   // time stamp.
+   base::Time verification_time = base::Time::Now();
+@@ -799,6 +821,20 @@ int CertVerifyProcBuiltin::VerifyInternal(
+         });
+   }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  for (const auto& x509_cert : domestic_trust_anchors) {
++    CertErrors parsing_errors;
++    scoped_refptr<ParsedCertificate> cert =
++        ParseCertificateFromBuffer(x509_cert->cert_buffer(), &parsing_errors);
++    if (cert)
++      trust_store.AddTrustAnchor(std::move(cert));
++    net_log.AddEvent(
++        NetLogEventType::CERT_VERIFY_PROC_ADDITIONAL_TRUST_ANCHOR, [&] {
++          return NetLogCertParams(x509_cert->cert_buffer(), parsing_errors);
++        });
++  }
++// Copyright (c) 2017 The Chromium Authors. All rights reserved.
++
+   // Get the global dependencies.
+   const EVRootCAMetadata* ev_metadata = EVRootCAMetadata::GetInstance();
+ 
+@@ -912,6 +948,22 @@ int CertVerifyProcBuiltin::VerifyInternal(
+   return error;
+ }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++int CertVerifyProcBuiltin::VerifyInternal(
++    X509Certificate* input_cert,
++    const std::string& hostname,
++    const std::string& ocsp_response,
++    const std::string& sct_list,
++    int flags,
++    CRLSet* crl_set,
++    const CertificateList& additional_trust_anchors,
++    CertVerifyResult* verify_result,
++    const NetLogWithSource& net_log) {
++  NOTREACHED();
++  return ERR_UNEXPECTED;
++}
++// Copyright (c) 2017 The Chromium Authors. All rights reserved.
++
+ }  // namespace
+ 
+ CertVerifyProcBuiltinResultDebugData::CertVerifyProcBuiltinResultDebugData(
+diff --git a/net/cert/cert_verify_proc_mac.cc b/net/cert/cert_verify_proc_mac.cc
+index cd989623b4153..caa1ed76ceb1a 100644
+--- a/net/cert/cert_verify_proc_mac.cc
++++ b/net/cert/cert_verify_proc_mac.cc
+@@ -5,7 +5,13 @@
+ #include "net/cert/cert_verify_proc_mac.h"
+ 
+ #include <CommonCrypto/CommonDigest.h>
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include <CoreFoundation/CFArray.h>
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include <CoreServices/CoreServices.h>
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include <Security/SecTrust.h>
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include <Security/Security.h>
+ 
+ #include <algorithm>
+@@ -16,6 +22,9 @@
+ #include "base/mac/mac_logging.h"
+ #include "base/mac/mac_util.h"
+ #include "base/mac/scoped_cftyperef.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "base/notreached.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "base/strings/string_piece.h"
+ #include "base/synchronization/lock.h"
+ #include "crypto/mac_security_services_lock.h"
+@@ -25,6 +34,9 @@
+ #include "net/cert/asn1_util.h"
+ #include "net/cert/cert_status_flags.h"
+ #include "net/cert/cert_verifier.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "net/cert/cert_verify_proc.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "net/cert/cert_verify_result.h"
+ #include "net/cert/crl_set.h"
+ #include "net/cert/ct_serialization.h"
+@@ -568,6 +580,9 @@ int BuildAndEvaluateSecTrustRef(CFArrayRef cert_array,
+                                 CFArrayRef sct_array_ref,
+                                 int flags,
+                                 CFArrayRef keychain_search_list,
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++                                const CertificateList& domestic_trust_anchors,
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+                                 ScopedCFTypeRef<SecTrustRef>* trust_ref,
+                                 SecTrustResultType* trust_result,
+                                 ScopedCFTypeRef<CFArrayRef>* verified_chain,
+@@ -585,6 +600,32 @@ int BuildAndEvaluateSecTrustRef(CFArrayRef cert_array,
+       return NetErrorFromOSStatus(status);
+   }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  if (!domestic_trust_anchors.empty()) {
++    base::ScopedCFTypeRef<CFMutableArrayRef> temporary_roots(
++        CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks));
++
++    for (const auto& root : domestic_trust_anchors) {
++      base::ScopedCFTypeRef<SecCertificateRef> os_cert(
++          x509_util::CreateSecCertificateFromX509Certificate(root.get()));
++      if (!os_cert)
++        continue;
++
++      CFArrayAppendValue(temporary_roots, os_cert.get());
++    }
++    if (CFArrayGetCount(temporary_roots)) {
++      OSStatus status =
++          SecTrustSetAnchorCertificates(tmp_trust, temporary_roots);
++      if (status)
++        return NetErrorFromOSStatus(status);
++      // Trust system store in addition to trusting |temporary_roots|.
++      status = SecTrustSetAnchorCertificatesOnly(tmp_trust, false);
++      if (status)
++        return NetErrorFromOSStatus(status);
++    }
++  }
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   if (keychain_search_list) {
+     status = SecTrustSetKeychains(tmp_trust, keychain_search_list);
+     if (status)
+@@ -693,6 +734,9 @@ int VerifyWithGivenFlags(X509Certificate* cert,
+                          const int flags,
+                          bool rev_checking_soft_fail,
+                          CRLSet* crl_set,
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++                         const CertificateList& domestic_trust_anchors,
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+                          CertVerifyResult* verify_result,
+                          CRLSetResult* completed_chain_crl_result) {
+   ScopedCFTypeRef<CFArrayRef> trust_policies;
+@@ -872,8 +916,10 @@ int VerifyWithGivenFlags(X509Certificate* cert,
+       int rv = BuildAndEvaluateSecTrustRef(
+           cert_array, trust_policies, ocsp_response_ref.get(),
+           sct_array_ref.get(), flags,
+-          scoped_alternate_keychain_search_list.get(), &temp_ref,
+-          &temp_trust_result, &temp_chain, &temp_chain_info);
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++          scoped_alternate_keychain_search_list.get(), domestic_trust_anchors,
++          &temp_ref, &temp_trust_result, &temp_chain, &temp_chain_info);
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+       if (rv != OK)
+         return rv;
+ 
+@@ -1115,7 +1161,9 @@ bool CertVerifyProcMac::SupportsAdditionalTrustAnchors() const {
+   return false;
+ }
+ 
+-int CertVerifyProcMac::VerifyInternal(
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++int CertVerifyProcMac::VerifyInternalWithDomesticAnchors(
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+     X509Certificate* cert,
+     const std::string& hostname,
+     const std::string& ocsp_response,
+@@ -1124,7 +1172,10 @@ int CertVerifyProcMac::VerifyInternal(
+     CRLSet* crl_set,
+     const CertificateList& additional_trust_anchors,
+     CertVerifyResult* verify_result,
+-    const NetLogWithSource& net_log) {
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++    const NetLogWithSource& net_log,
++    const CertificateList& domestic_trust_anchors) {
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+   // Save the input state of |*verify_result|, which may be needed to re-do
+   // verification with different flags.
+   const CertVerifyResult input_verify_result(*verify_result);
+@@ -1136,7 +1187,10 @@ int CertVerifyProcMac::VerifyInternal(
+   CRLSetResult completed_chain_crl_result;
+   int rv = VerifyWithGivenFlags(cert, hostname, ocsp_response, sct_list, flags,
+                                 /*rev_checking_soft_fail=*/true, crl_set,
+-                                verify_result, &completed_chain_crl_result);
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++                                domestic_trust_anchors, verify_result,
++                                &completed_chain_crl_result);
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+   if (rv != OK)
+     return rv;
+ 
+@@ -1158,8 +1212,10 @@ int CertVerifyProcMac::VerifyInternal(
+       int tmp_rv = VerifyWithGivenFlags(
+           verify_result->verified_cert.get(), hostname, ocsp_response, sct_list,
+           flags | VERIFY_REV_CHECKING_ENABLED,
+-          /*rev_checking_soft_fail=*/false, crl_set, &ev_verify_result,
+-          &completed_chain_crl_result);
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++          /*rev_checking_soft_fail=*/false, crl_set, domestic_trust_anchors,
++          &ev_verify_result, &completed_chain_crl_result);
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+       if (tmp_rv == OK) {
+         // If EV re-verification succeeded, mark as EV and return those results.
+         *verify_result = ev_verify_result;
+@@ -1189,6 +1245,21 @@ int CertVerifyProcMac::VerifyInternal(
+   return OK;
+ }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++int CertVerifyProcMac::VerifyInternal(
++    X509Certificate* cert,
++    const std::string& hostname,
++    const std::string& ocsp_response,
++    const std::string& sct_list,
++    int flags,
++    CRLSet* crl_set,
++    const CertificateList& additional_trust_anchors,
++    CertVerifyResult* verify_result,
++    const NetLogWithSource& net_log) {
++  NOTREACHED();
++  return ERR_UNEXPECTED;
++}
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ }  // namespace net
+ 
+ #pragma clang diagnostic pop  // "-Wdeprecated-declarations"
+diff --git a/net/cert/cert_verify_proc_mac.h b/net/cert/cert_verify_proc_mac.h
+index 84ea532464f31..d52b312012332 100644
+--- a/net/cert/cert_verify_proc_mac.h
++++ b/net/cert/cert_verify_proc_mac.h
+@@ -81,6 +81,20 @@ class NET_EXPORT CertVerifyProcMac : public CertVerifyProc {
+                      const CertificateList& additional_trust_anchors,
+                      CertVerifyResult* verify_result,
+                      const NetLogWithSource& net_log) override;
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++
++  int VerifyInternalWithDomesticAnchors(
++      X509Certificate* cert,
++      const std::string& hostname,
++      const std::string& ocsp_response,
++      const std::string& sct_list,
++      int flags,
++      CRLSet* crl_set,
++      const CertificateList& additional_trust_anchors,
++      CertVerifyResult* verify_result,
++      const NetLogWithSource& net_log,
++      const CertificateList& domestic_trust_anchors) override;
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ };
+ 
+ }  // namespace net
+diff --git a/net/cert/cert_verify_proc_win.cc b/net/cert/cert_verify_proc_win.cc
+index 1c7341856843b..bc79b2d4ecc59 100644
+--- a/net/cert/cert_verify_proc_win.cc
++++ b/net/cert/cert_verify_proc_win.cc
+@@ -12,6 +12,9 @@
+ #include "base/memory/free_deleter.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "base/no_destructor.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "base/notreached.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/synchronization/lock.h"
+@@ -19,11 +22,17 @@
+ #include "base/threading/thread_local.h"
+ #include "base/threading/thread_task_runner_handle.h"
+ #include "base/win/registry.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "base/win/win_util.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "base/win/windows_version.h"
+ #include "crypto/capi_util.h"
+ #include "crypto/scoped_capi_types.h"
+ #include "crypto/sha2.h"
+ #include "net/base/net_errors.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "net/base/url_util.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "net/cert/asn1_util.h"
+ #include "net/cert/cert_status_flags.h"
+ #include "net/cert/cert_verifier.h"
+@@ -35,6 +44,9 @@
+ #include "net/cert/test_root_certs.h"
+ #include "net/cert/x509_certificate.h"
+ #include "net/cert/x509_util_win.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "third_party/boringssl/src/include/openssl/pool.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ 
+ #if !defined(CERT_TRUST_HAS_WEAK_SIGNATURE)
+ // This was introduced in Windows 8 / Windows Server 2012, but retroactively
+@@ -1018,6 +1030,95 @@ void AuthRootVersionChecker::UpdateAuthRootVersion() {
+       base::Time::FromFileTime(ctl_context->pCtlInfo->ThisUpdate);
+ }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++BOOL WINAPI InterceptedOpenStoreW(LPCSTR store_provider,
++                                  DWORD encoding,
++                                  HCRYPTPROV crypt_provider,
++                                  DWORD flags,
++                                  const void* extra,
++                                  HCERTSTORE memory_store,
++                                  PCERT_STORE_PROV_INFO store_info);
++
++class RootCertInjector {
++ public:
++  HCERTSTORE* GetRootCerts() { return thread_local_root_certs_.Get(); }
++  void SetRootCerts(HCERTSTORE* config) {
++    thread_local_root_certs_.Set(config);
++  }
++
++  PFN_CERT_DLL_OPEN_STORE_PROV_FUNC original_function() {
++    return original_function_;
++  }
++
++ private:
++  friend struct base::LazyInstanceTraitsBase<RootCertInjector>;
++
++  RootCertInjector() {
++    // Unused as we are leaky
++    HCRYPTOIDFUNCADDR original_handle;
++
++    auto* registered_functions =
++        CryptInitOIDFunctionSet(CRYPT_OID_OPEN_STORE_PROV_FUNC, 0);
++
++    BOOL ok = CryptGetOIDFunctionAddress(
++        registered_functions, 0, CERT_STORE_PROV_SYSTEM_W, 0,
++        reinterpret_cast<void**>(&original_function_), &original_handle);
++    DCHECK(ok);
++
++    const CRYPT_OID_FUNC_ENTRY kInterceptFunction[] = {
++        {CERT_STORE_PROV_SYSTEM_W,
++         reinterpret_cast<void*>(&InterceptedOpenStoreW)},
++    };
++    CryptInstallOIDFunctionAddress(nullptr, 0, CRYPT_OID_OPEN_STORE_PROV_FUNC,
++                                   base::size(kInterceptFunction),
++                                   kInterceptFunction,
++                                   CRYPT_INSTALL_OID_FUNC_BEFORE_FLAG);
++  }
++  ~RootCertInjector() = default;
++
++  PFN_CERT_DLL_OPEN_STORE_PROV_FUNC original_function_;
++  base::ThreadLocalPointer<HCERTSTORE> thread_local_root_certs_;
++};
++
++base::LazyInstance<RootCertInjector>::Leaky g_root_cert_injector =
++    LAZY_INSTANCE_INITIALIZER;
++
++BOOL WINAPI InterceptedOpenStoreW(LPCSTR store_provider,
++                                  DWORD encoding,
++                                  HCRYPTPROV crypt_provider,
++                                  DWORD flags,
++                                  const void* store_name,
++                                  HCERTSTORE memory_store,
++                                  PCERT_STORE_PROV_INFO store_info) {
++  uintptr_t store_as_uintptr = reinterpret_cast<uintptr_t>(store_provider);
++  if (store_as_uintptr > 0xFFFF || store_provider != CERT_STORE_PROV_SYSTEM_W ||
++      !g_root_cert_injector.Get().original_function())
++    return FALSE;
++
++  BOOL ok = g_root_cert_injector.Get().original_function()(
++      store_provider, encoding, crypt_provider, flags, store_name, memory_store,
++      store_info);
++
++  if (!ok || !g_root_cert_injector.Get().GetRootCerts() ||
++      (flags & CERT_SYSTEM_STORE_RELOCATE_FLAG) ||
++      lstrcmpiW(reinterpret_cast<LPCWSTR>(store_name), L"root"))
++    return ok;
++
++  return CertAddStoreToCollection(
++      memory_store, *g_root_cert_injector.Get().GetRootCerts(), 0, 0);
++}
++
++class ScopedThreadLocalRootCerts {
++ public:
++  explicit ScopedThreadLocalRootCerts(HCERTSTORE* certs) {
++    g_root_cert_injector.Get().SetRootCerts(certs);
++  }
++  ~ScopedThreadLocalRootCerts() {
++    g_root_cert_injector.Get().SetRootCerts(nullptr);
++  }
++};
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+ }  // namespace
+ 
+ CertVerifyProcWin::ResultDebugData::ResultDebugData(
+@@ -1063,7 +1164,9 @@ bool CertVerifyProcWin::SupportsAdditionalTrustAnchors() const {
+   return false;
+ }
+ 
+-int CertVerifyProcWin::VerifyInternal(
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++int CertVerifyProcWin::VerifyInternalWithDomesticAnchors(
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+     X509Certificate* cert,
+     const std::string& hostname,
+     const std::string& ocsp_response,
+@@ -1072,11 +1175,38 @@ int CertVerifyProcWin::VerifyInternal(
+     CRLSet* crl_set,
+     const CertificateList& additional_trust_anchors,
+     CertVerifyResult* verify_result,
+-    const NetLogWithSource& net_log) {
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++    const NetLogWithSource& net_log,
++    const CertificateList& domestic_trust_anchors) {
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+   // Ensure the Revocation Provider has been installed and configured for this
+   // CRLSet.
+   ScopedThreadLocalCRLSet thread_local_crlset(crl_set);
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  crypto::ScopedHCERTSTORE root_cert_store;
++
++  if (!domestic_trust_anchors.empty()) {
++    root_cert_store.reset(
++        CertOpenStore(CERT_STORE_PROV_MEMORY, 0, NULL,
++                      CERT_STORE_DEFER_CLOSE_UNTIL_LAST_FREE_FLAG, nullptr));
++
++    for (const auto& root : domestic_trust_anchors) {
++      CertAddEncodedCertificateToStore(
++          root_cert_store.get(), X509_ASN_ENCODING,
++          CRYPTO_BUFFER_data(root->cert_buffer()),
++          base::checked_cast<DWORD>(CRYPTO_BUFFER_len(root->cert_buffer())),
++          CERT_STORE_ADD_NEW, nullptr);
++    }
++  }
++
++  HCERTSTORE root_cert_store_handle = root_cert_store.get();
++  absl::optional<ScopedThreadLocalRootCerts> thread_local_root_certs;
++  if (root_cert_store_handle) {
++    thread_local_root_certs.emplace(&root_cert_store_handle);
++  }
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   crypto::ScopedPCCERT_CONTEXT cert_list =
+       x509_util::CreateCertContextWithChain(
+           cert, x509_util::InvalidIntermediateBehavior::kIgnore);
+@@ -1155,6 +1285,20 @@ int CertVerifyProcWin::VerifyInternal(
+   if (TestRootCerts::HasInstance())
+     chain_engine = TestRootCerts::GetInstance()->GetChainEngine();
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  if (root_cert_store.get()) {
++    static constexpr DWORD kSizeofCertChainEngineConfig =
++        SIZEOF_STRUCT_WITH_SPECIFIED_LAST_MEMBER(CERT_CHAIN_ENGINE_CONFIG,
++                                                 hExclusiveTrustedPeople);
++    CERT_CHAIN_ENGINE_CONFIG engine_config = {kSizeofCertChainEngineConfig};
++    engine_config.dwFlags =
++        CERT_CHAIN_ENABLE_CACHE_AUTO_UPDATE | CERT_CHAIN_ENABLE_SHARE_STORE;
++    CertCreateCertificateChainEngine(
++        &engine_config,
++        crypto::ScopedHCERTCHAINENGINE::Receiver(chain_engine).get());
++  }
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   // Add stapled OCSP response data, which will be preferred over online checks
+   // and used when in cache-only mode.
+   if (!ocsp_response.empty()) {
+@@ -1384,4 +1528,20 @@ int CertVerifyProcWin::VerifyInternal(
+   return OK;
+ }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++int CertVerifyProcWin::VerifyInternal(
++    X509Certificate* cert,
++    const std::string& hostname,
++    const std::string& ocsp_response,
++    const std::string& sct_list,
++    int flags,
++    CRLSet* crl_set,
++    const CertificateList& additional_trust_anchors,
++    CertVerifyResult* verify_result,
++    const NetLogWithSource& net_log) {
++  NOTREACHED();
++  return ERR_UNEXPECTED;
++}
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+ }  // namespace net
+diff --git a/net/cert/cert_verify_proc_win.h b/net/cert/cert_verify_proc_win.h
+index d79c788b6cde0..08aa3e9e4e2aa 100644
+--- a/net/cert/cert_verify_proc_win.h
++++ b/net/cert/cert_verify_proc_win.h
+@@ -74,6 +74,20 @@ class NET_EXPORT CertVerifyProcWin : public CertVerifyProc {
+                      const CertificateList& additional_trust_anchors,
+                      CertVerifyResult* verify_result,
+                      const NetLogWithSource& net_log) override;
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++
++  int VerifyInternalWithDomesticAnchors(
++      X509Certificate* cert,
++      const std::string& hostname,
++      const std::string& ocsp_response,
++      const std::string& sct_list,
++      int flags,
++      CRLSet* crl_set,
++      const CertificateList& additional_trust_anchors,
++      CertVerifyResult* verify_result,
++      const NetLogWithSource& net_log,
++      const CertificateList& domestic_trust_anchors) override;
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ };
+ 
+ }  // namespace net
+diff --git a/net/test/embedded_test_server/embedded_test_server.cc b/net/test/embedded_test_server/embedded_test_server.cc
+index 01233b6c48eb3..4d6accfcd5c2f 100644
+--- a/net/test/embedded_test_server/embedded_test_server.cc
++++ b/net/test/embedded_test_server/embedded_test_server.cc
+@@ -414,6 +414,14 @@ bool EmbeddedTestServer::GenerateCertAndKey() {
+   std::unique_ptr<CertBuilder> static_root = CertBuilder::FromStaticCertFile(
+       certs_dir.AppendASCII("root_ca_cert.pem"));
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  if (cert_config_.generate_root_cert) {
++    static_root = std::make_unique<CertBuilder>(
++        static_root->GetX509Certificate()->cert_buffer(), nullptr);
++    generated_root_cert_ = static_root->GetX509Certificate();
++  }
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   auto now = base::Time::Now();
+   // Will be nullptr if cert_config_.intermediate == kNone.
+   std::unique_ptr<CertBuilder> intermediate;
+diff --git a/net/test/embedded_test_server/embedded_test_server.h b/net/test/embedded_test_server/embedded_test_server.h
+index 7716d2be736a9..fd3034debd754 100644
+--- a/net/test/embedded_test_server/embedded_test_server.h
++++ b/net/test/embedded_test_server/embedded_test_server.h
+@@ -16,6 +16,9 @@
+ #include "base/files/file_path.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/ref_counted.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "base/memory/scoped_refptr.h"
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+ #include "base/memory/weak_ptr.h"
+ #include "base/strings/string_piece.h"
+ #include "base/threading/thread.h"
+@@ -278,6 +281,11 @@ class EmbeddedTestServer {
+     // intermediate, and if so, how it is delivered to the client.
+     IntermediateType intermediate = IntermediateType::kNone;
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++    // Generate unique root cert with random public key
++    bool generate_root_cert;
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+     // Configure OCSP handling.
+     // Note: In the current implementation the AIA request handler does not
+     // actually parse the OCSP request (a different OCSP URL is used for each
+@@ -439,6 +447,13 @@ class EmbeddedTestServer {
+   // InitializeAndListen() has been called.
+   scoped_refptr<X509Certificate> GetCertificate();
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  // Returns generated root certificate if exists
++  scoped_refptr<X509Certificate> GetGeneratedRootCertificate() {
++    return generated_root_cert_;
++  }
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   // Registers request handler which serves files from |directory|.
+   // For instance, a request to "/foo.html" is served by "foo.html" under
+   // |directory|. Files under sub directories are also handled in the same way
+@@ -594,6 +609,10 @@ class EmbeddedTestServer {
+   base::flat_map<std::string, std::string> alps_accept_ch_;
+   std::unique_ptr<SSLServerContext> context_;
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  scoped_refptr<X509Certificate> generated_root_cert_;
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++
+   // HTTP server that handles AIA URLs that are embedded in this test server's
+   // certificate when the server certificate is one of the CERT_AUTO variants.
+   std::unique_ptr<EmbeddedTestServer> aia_http_server_;
+diff --git a/services/network/network_service.cc b/services/network/network_service.cc
+index cc578c6cde2a8..dec82aadcdd10 100644
+--- a/services/network/network_service.cc
++++ b/services/network/network_service.cc
+@@ -713,9 +713,92 @@ void NetworkService::ConfigureSCTAuditing(
+   sct_auditing_cache_->Configure(std::move(configuration));
+ }
+ 
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++namespace {
++
++struct DomesticCTLogInfo {
++  // The DER-encoded SubjectPublicKeyInfo for the log.  Note that this is not
++  // the same as a "log ID": a log ID is the SHA-256 hash of this value.
++  const char* const log_key;
++  // The length, in bytes, of |log_key|.
++  const size_t log_key_length;
++  // The user-friendly log name.
++  // Note: This will not be translated.
++  const char* const log_name;
++  // The current operator of the log.
++  const char* const current_operator;
++};
++
++constexpr DomesticCTLogInfo kDomesticCTLogList[] = {
++    {"\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86"
++     "\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\x25\x2f\xce\x36\x0e\x5e\xe1"
++     "\x73\xa5\x87\xf8\x51\x6d\x7c\x0f\x21\x8e\xa5\x70\x07\x15\x75\x67\x2f"
++     "\x32\x25\x50\xfa\x8e\xeb\xec\x9a\xaf\x62\x58\x9f\x5d\x06\xee\x9d\x93"
++     "\xac\x84\xfa\x3d\x0f\x6d\xb0\x6b\x98\x5a\x22\x35\x23\x59\x2e\x17\xa6"
++     "\x2f\x1a\xb9\xec\x15\xa7",
++     91, "Yandex Agate-2022 log", "Yandex"},
++    {"\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86"
++     "\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\x87\x18\xcb\x63\xdc\xc1\x41"
++     "\x99\x39\x56\x6c\xa3\x29\xdf\xc4\x8f\xa2\x9f\x04\xb3\x44\xd8\xe2\xa7"
++     "\x77\xe2\xdd\xc9\x72\x2c\x6b\x59\x0f\x91\x7a\xb2\x56\x52\xd6\x11\xf4"
++     "\x04\xed\xb6\x12\x64\xeb\x76\x51\x76\x2c\x71\x1b\x15\x14\xec\xaa\xc7"
++     "\x01\x98\x53\x4c\xa3\x07",
++     91, "Yandex Agate-2023 log", "Yandex"},
++    {"\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86"
++     "\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\x2e\x68\x15\xf8\x74\x2e\xbc"
++     "\xcb\x3b\x31\x82\x83\xd5\x04\xbe\x67\xd0\x3c\x26\xae\xf6\x39\x16\xf4"
++     "\x2a\x27\x17\x0d\xbb\x4f\xa3\x30\xbc\xab\x72\xff\xab\x83\x73\xf7\x70"
++     "\x59\x75\x51\x18\xa2\x86\x3c\x82\xf1\x95\x13\x18\x70\xb9\xa5\xaf\x58"
++     "\x43\x7b\x28\x4e\x7b\x14",
++     91, "VK 'NCA2022' Log", "VK LLC"},
++    {"\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86"
++     "\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\x52\x27\x57\xe0\x40\x7a\x19"
++     "\xd8\x06\xa1\x00\xb4\xbb\x55\x4e\xa2\x46\x8b\x87\xb7\x1f\x37\xae\x82"
++     "\x4d\x9f\xf3\x2d\xcf\x5b\xae\xda\x69\x13\xd2\xcd\x37\x24\x59\xf4\xc5"
++     "\xe5\xf9\x84\xea\x43\xf6\x31\x36\x2f\xc2\x91\x77\xdb\x57\xdc\x4c\x0b"
++     "\x8b\x55\x28\xdf\xff\x9e",
++     91, "VK 'NCA2023' Log", "VK LLC"},
++    {"\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86"
++     "\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\xc6\xae\x96\xa7\x66\x26\x2c"
++     "\xd0\x21\x68\xce\x43\x92\x83\xeb\xd0\xae\x97\x6b\xb9\x97\xf5\xca\xb4"
++     "\xae\x6f\x3b\x34\x65\xf6\xe8\x1b\x69\x50\xc8\xa6\x83\x0b\x96\x04\xb1"
++     "\x66\xd0\x89\x83\xd9\xd8\x0e\xec\x97\x59\x24\x98\x3a\x4f\xda\x86\xf4"
++     "\x4a\x8e\x5a\x0d\x68\xda",
++     91, "VK 'NCA2024' Log", "VK LLC"},
++    {"\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86"
++     "\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\x0f\x86\x86\x59\xc1\x88\x6c"
++     "\x1b\x9b\xd9\x79\x0b\x20\xff\xa6\x0b\xfa\x81\xe4\x6c\x97\x01\xc7\xcf"
++     "\x52\x95\xe6\x99\xd5\x06\x41\x38\xd9\x9e\xc9\x36\xe8\xb0\x16\xa2\xb7"
++     "\x85\xe1\x36\xae\x11\x8e\x63\x7f\x31\x67\xd3\xb0\x05\x58\x06\x9d\x36"
++     "\xf6\x46\xfd\xf1\xa4\x50",
++     91, "The Ministry of Digital Development and Communications '2022' Log",
++     "The Ministry of Digital Development and Communications"},
++    {"\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86"
++     "\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\x32\xbb\xca\x32\x91\x99\x83"
++     "\x34\xbc\x19\x67\x26\x55\x99\x93\x09\x37\x37\xe7\x79\x59\x9a\x51\x76"
++     "\x6d\x3e\x91\xc4\x23\x6f\xb5\xa5\x57\xd0\xf9\x39\xcc\xaa\x89\x69\x2f"
++     "\x18\x52\xe5\x7e\xf5\x78\x55\x00\x9d\x44\x89\x78\x75\x2e\x81\xe7\xc8"
++     "\x62\x53\x8b\x71\xac\x95",
++     91, "The Ministry of Digital Development and Communications '2023' Log",
++     "The Ministry of Digital Development and Communications"}};
++
++}  // namespace
++// Copyright 2017 The Chromium Authors. All rights reserved.
++
+ void NetworkService::UpdateCtLogList(std::vector<mojom::CTLogInfoPtr> log_list,
+                                      base::Time update_time,
+                                      UpdateCtLogListCallback callback) {
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++  for (const auto& entry : kDomesticCTLogList) {
++    auto log_list_entry = mojom::CTLogInfo::New();
++    log_list_entry->public_key =
++        std::string(entry.log_key, entry.log_key_length);
++    log_list_entry->name = entry.log_name;
++    log_list_entry->current_operator = entry.current_operator;
++    log_list.push_back(std::move(log_list_entry));
++  }
++// Copyright 2017 The Chromium Authors. All rights reserved.
++
+   log_list_ = std::move(log_list);
+   ct_log_list_update_time_ = update_time;
+ 
+diff --git a/services/network/network_service_unittest.cc b/services/network/network_service_unittest.cc
+index 67563bd04ced0..a57d56665431d 100644
+--- a/services/network/network_service_unittest.cc
++++ b/services/network/network_service_unittest.cc
+@@ -9,6 +9,9 @@
+ 
+ #include "base/base64.h"
+ #include "base/bind.h"
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++#include "base/callback_helpers.h"
++// Copyright 2017 The Chromium Authors. All rights reserved.
+ #include "base/command_line.h"
+ #include "base/containers/span.h"
+ #include "base/files/file_util.h"
+@@ -982,6 +985,30 @@ TEST_F(NetworkServiceTest, DisableCTEnforcement) {
+       new_network_context.url_request_context()->transport_security_state();
+   EXPECT_TRUE(transport_security_state->is_ct_emergency_disabled_for_testing());
+ }
++// Copyright (C) 2022. YANDEX,LLC. All rights reserved.
++
++TEST_F(NetworkServiceTest, DomesticRoots) {
++  service()->UpdateCtLogList({}, base::Time::Now(), base::DoNothing());
++  bool has_yandex = false;
++  bool has_vk = false;
++  bool has_ministry = false;
++  for (const auto& log : service()->log_list()) {
++    if (log->current_operator == "Yandex") {
++      has_yandex = true;
++    }
++    if (log->current_operator == "VK LLC") {
++      has_vk = true;
++    }
++    if (log->current_operator ==
++        "The Ministry of Digital Development and Communications") {
++      has_ministry = true;
++    }
++  }
++  EXPECT_TRUE(has_yandex);
++  EXPECT_TRUE(has_vk);
++  EXPECT_TRUE(has_ministry);
++}
++// Copyright 2017 The Chromium Authors. All rights reserved.
+ #endif  // BUILDFLAG(IS_CT_SUPPORTED)
+ 
+ class NetworkServiceTestWithService : public testing::Test {
